@@ -1,0 +1,16 @@
+85 'U',		△		每一行會對應到一個設定
+72 'H',		□		只有第一個單字會被解析為設定(以空白分割)，因此後面全是註解
+J 74,		×		前12個設定是按鍵配置
+K 75,		◯		請使用十進位數字的Virtual-Key Codes，具體數值請參考https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
+38 VK_UP,	🡅		如果是字母按鍵，你也可以使用單一大寫字母而不是Virtual-Key Codes
+37 VK_LEFT,	🡄
+40 VK_DOWN,	🡇
+39 VK_RIGHT,	🡆
+65 'A'		[↼ 		這裡是滑鍵設定
+68 'D'		    ⇀]
+49 '1'			[↼ 
+51 '3'			    ⇀]	結尾請不要有多餘的空行
+1.0	slide_require_multiplier   此設定為滑動的閥值，值越大則需要越大的速度才會判定為滑動
+1	output_received_message	   是否輸出從平板收到的信息
+1	output_keyboard_operation  是否輸出按鍵操作與狀態
+0	kill_adb_when_close        當結束此程式時，是否要終止ADB背景服務。選擇不中止的話，下一次的啟動速度會變快。
