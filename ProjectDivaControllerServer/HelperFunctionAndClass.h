@@ -6,6 +6,7 @@
 #include <boost/nowide/utf/convert.hpp>
 #include <boost/nowide/convert.hpp>
 #include <format>
+#include <numeric>
 #include <winsock2.h>
 #include <iphlpapi.h>
 #include <ws2tcpip.h>
@@ -228,7 +229,19 @@ public:
         }
     }
 };
-
+std::string format_thousands_separator(long long value) {
+    std::string str = std::format("{}", value);
+    if (str.length() > 3) [[likely]] {
+        str.insert(str.end() - 3, ',');
+        if (str.length() > 7) {
+            str.insert(str.end() - 7, ',');
+            if (str.length() > 11) {
+                str.insert(str.end() - 11, ',');
+            }
+        }
+    }
+    return str;
+}
 static void SetConsoleColor(int color = FOREGROUND_BLUE| FOREGROUND_GREEN| FOREGROUND_RED) { SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), color); }
 
 template <class... _Types>
@@ -312,4 +325,80 @@ std::chrono::nanoseconds time_since_epoch() noexcept {
 DWORD GetTickCount32() noexcept{
     return static_cast<DWORD>(GetTickCount64());
 }
+class NetStabilityMeter {
+    std::vector<long long> samples;
+    long long adjuster;//用於調整數值以避免整數溢位
+public:
+    NetStabilityMeter() :adjuster() {
+        samples.reserve(100);
+    }
+    bool AddSamples(long long sample) {
+        if (adjuster) {
+            sample += adjuster;
+        }
+        else {
+            adjuster = -sample;
+            sample = 0;
+        }
+        samples.push_back(sample);
+        if (samples.size() % 100 == 0) {
+            std::sort(samples.end() - 100, samples.end());
+            long long maxmin10 = 0;
+            for (int i = 1; i <= 10; ++i) {
+                maxmin10 += samples.end()[-i] - samples.end()[-i - 90];
+            }
+            double average = std::reduce(samples.end() - 100, samples.end()) / 100.0;
+            double mean_absolute_deviation = std::reduce(samples.end() - 100, samples.end(), 0.0,
+                [average](double init, long long value) {return init + std::abs(value - average); }
+            ) / 100.0;
+            double standard_deviation = std::sqrt(
+                std::reduce(samples.end() - 100, samples.end(), 0.0,
+                    [](double init, long long value) {return init + static_cast<double>(value) * value; })
+                / 100.0 - average * average
+            );
+            std::print("Connection stability test results:\n"
+                "This 100 tests:\n"
+                "max - min:              {:>16}ns\n"
+                "max10% - min10%:        {:>16}ns\n"
+                "standard deviation:     {:>16}ns\n"
+                "mean absolute deviation:{:>16}ns\n\n"
+                , format_thousands_separator(samples.back() - samples.end()[-100])
+                , format_thousands_separator(maxmin10 / 10)
+                , format_thousands_separator(static_cast<long long>(standard_deviation))
+                , format_thousands_separator(static_cast<long long>(mean_absolute_deviation))
+            );
+            if (samples.size() > 100) {
+                std::sort(samples.begin(), samples.end());
+                maxmin10 = 0;
+                const double element_count = static_cast<double>(samples.size());
+                for (int i = 1, k = int(samples.size() / 10); i <= k; ++i) {
+                    maxmin10 += samples.end()[-i] - samples[i - 1];
+                }
+                average = std::reduce(samples.begin(), samples.end()) / element_count;
+                mean_absolute_deviation = std::reduce(samples.begin(), samples.end(), 0.0,
+                    [average](double init, long long value) {return init + std::abs(value - average); }
+                ) / element_count;
+                standard_deviation = std::sqrt(
+                    std::reduce(samples.begin(), samples.end(), 0.0,
+                        [](double init, long long value) {
+                            return init + static_cast<double>(value) * value; })
+                    / element_count - average * average
+                );
+                std::print("All {} tests:\n"
+                    "max - min:              {:>16}ns\n"
+                    "max10% - min10%:        {:>16}ns\n"
+                    "standard deviation:     {:>16}ns\n"
+                    "mean absolute deviation:{:>16}ns\n\n\n"
+                    , samples.size()
+                    , format_thousands_separator(samples.back() - samples.front())
+                    , format_thousands_separator(maxmin10 * 10 / samples.size())
+                    , format_thousands_separator(static_cast<long long>(standard_deviation))
+                    , format_thousands_separator(static_cast<long long>(mean_absolute_deviation))
+                );
+            }
+            return true;
+        }
+        return false;
+    }
+};
 #endif // HELPERFUNCTIONANDCLASS_H

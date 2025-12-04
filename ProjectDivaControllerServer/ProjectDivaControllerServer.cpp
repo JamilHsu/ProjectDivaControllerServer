@@ -2,20 +2,13 @@
 //
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #pragma execution_character_set("utf-8")
-// touch_server.cpp
 // Windows (Winsock) UDP discovery + TCP service
 //  - UDP discovery port: 39831
 //  - TCP service port:   3939
 //
 // Notes:
 //  - Allow program through Windows Firewall when prompted.
-//  - Run this on the PC you want Android to discover/connect to.
 
-//延遲
-//電腦熱點->平板/手機 43ms+
-//手機熱點->平板->USB網路共享->電腦 63ms+
-//手機熱點->USB網路共享->電腦 55ms++
-//手機熱點->平板+電腦 55ms++
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -39,7 +32,7 @@
 
 constexpr unsigned short DISCOVERY_PORT = 39831;
 constexpr unsigned short DAFULT_SERVICE_PORT = 3939;
-std::atomic<unsigned short> g_service_port = 3939;
+std::atomic<unsigned short> g_service_port = DAFULT_SERVICE_PORT;
 std::atomic<bool> g_running(true);
 
 double g_slide_require_multiplier = 1.0;
@@ -49,10 +42,8 @@ bool g_output_keyboard_operation = true;
 #else
 bool g_output_received_message = false;
 bool g_output_keyboard_operation = false;
-#endif // _DEBUG
-
-
-bool g_kill_adb_when_close = false;
+#endif // DEBUG
+bool g_test_connection_stability = true;
 
 std::array<BYTE, 8> vk_button{
     'U',
@@ -112,17 +103,7 @@ public:
                 printError("PING returned an incorrect PONG format.\n");
             }
             else {
-                std::string str = std::format("{}",now.count() - timept);
-                if (str.length() > 3) [[likely]] {
-                    str.insert(str.end()-3, ',');
-                    if (str.length() > 7) {
-                        str.insert(str.end() - 7, ',');
-                        if (str.length() > 11) [[unlikely]] {
-                            str.insert(str.end() - 11, ',');
-                        }
-                    }
-                }
-                std::print("Round-Trip Time: {}ns\n", str);
+                std::print("Round-Trip Time: {}ns\n", format_thousands_separator(now.count() - timept));
             }
             return 0;
         }
@@ -421,7 +402,6 @@ private:
                 keybd_state.sticks[1] == 0 ? " • " : keybd_state.sticks[1] > 0 ? " •>" : "<• "
             );
         }
-
     }
     void cleanup_keybd_state() {
         map_ID_cache = {};
@@ -445,7 +425,7 @@ static void udpDiscoveryServer() {
     SOCKET sock = INVALID_SOCKET;
     sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock == INVALID_SOCKET) {
-        printWSAError("UDP socket()");
+        printWSAError("[UDP] socket()");
         return;
     }
 
@@ -456,7 +436,7 @@ static void udpDiscoveryServer() {
     local.sin_port = htons(DISCOVERY_PORT);
 
     if (bind(sock, reinterpret_cast<sockaddr*>(&local), sizeof(local)) == SOCKET_ERROR) {
-        printWSAError("UDP bind()");
+        printWSAError("[UDP] bind()");
         closesocket(sock);
         return;
     }
@@ -479,20 +459,20 @@ static void udpDiscoveryServer() {
                 continue;
             }
             else {
-                printWSAError("UDP recvfrom()");
+                printWSAError("[UDP] recvfrom()");
                 break;
             }
         }
         buf[n] = '\0';
         char fromIp[INET_ADDRSTRLEN] = { 0 };
         inet_ntop(AF_INET, &from.sin_addr, fromIp, sizeof(fromIp));
-        std::print("[UDP] Received from {}:{} -> '{}'\n", fromIp, ntohs(from.sin_port), buf);
+        std::print("[UDP] Received from {}:{} -> {}\n", fromIp, ntohs(from.sin_port), buf);
 
         // Simple protocol: respond with HERE:PORT
         std::string resp = "Miku here: " + std::to_string(g_service_port);
         int sent = sendto(sock, resp.c_str(), (int)resp.size(), 0, reinterpret_cast<sockaddr*>(&from), fromLen);
         if (sent == SOCKET_ERROR) {
-            printWSAError("UDP sendto()");
+            printWSAError("[UDP] sendto()");
             // continue - discovery best-effort
         }
         else {
@@ -525,49 +505,17 @@ static void tcpService() {
     srv.sin_port = htons(g_service_port);
 
     if (bind(listenSock, reinterpret_cast<sockaddr*>(&srv), sizeof(srv)) == SOCKET_ERROR) {
-        printWSAError("TCP bind()");
+        printWSAError("[TCP] bind()");
         closesocket(listenSock);
         return;
     }
     if (listen(listenSock, 1) == SOCKET_ERROR) {
-        printWSAError("TCP listen()");
+        printWSAError("[TCP] listen()");
         closesocket(listenSock);
         return;
     }
     listLocalIPsAndAdapters();
     std::print("[TCP] Service listening on port {}\n", g_service_port.load());
-    {
-        char hostname[256];
-        gethostname(hostname, sizeof(hostname));
-        addrinfo hints{}, * info;
-        hints.ai_family = AF_INET;
-        getaddrinfo(hostname, nullptr, &hints, &info);
-        std::string str;
-        str.reserve(256);
-        for (auto p = info; p; p = p->ai_next) {
-            sockaddr_in* addr = reinterpret_cast<sockaddr_in*>(p->ai_addr);
-            char ip[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip));
-            str += std::format("[TCP] Listening on {}:{}\n", ip, g_service_port.load());
-        }
-        str += '\n';
-        std::print("{}",str);
-        freeaddrinfo(info);
-    }
-    {
-        SetConsoleColor(FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-        if (system("adb devices -l") == 0 
-            && system("adb reverse tcp:3939 tcp:3939") == 0
-            && system("adb reverse --list")==0) {
-            SetConsoleColor(FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED | FOREGROUND_INTENSITY);
-            std::print("[TCP] You can connect to the server from 127.0.0.1:3939 via ADB.\n\n");
-        }
-        else {
-            SetConsoleColor(FOREGROUND_GREEN | FOREGROUND_RED | FOREGROUND_INTENSITY);
-            std::print("[TCP] Unable to connect via ADB.\n\n");
-        }
-        SetConsoleColor();
-    }
 
     for (int count = 0; g_running.load(); ++count) {
         std::print("[TCP] Waiting for client...\n");
@@ -595,7 +543,9 @@ static void tcpService() {
         // 關閉 Nagle 演算法
         {
             BOOL flag = TRUE;
-            setsockopt(client, IPPROTO_TCP, TCP_NODELAY, (char*)&flag, sizeof(flag));
+            if (setsockopt(client, IPPROTO_TCP, TCP_NODELAY, (char*)&flag, sizeof(flag))) {
+                printWSAError("setsockopt(TCP_NODELAY)");
+            }
         }
         sockaddr_in peer{};
         int peerLen = sizeof(peer);
@@ -605,19 +555,30 @@ static void tcpService() {
         
         std::print("[TCP] Client connected from {}:{}\n", peerIp, ntohs(peer.sin_port));
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
+        static constexpr LPCWSTR tester_UI_title = L"Connection stability test finished";
         try {
             // receive loop
             const int BUF_SZ = 2048;
             std::vector<char> buffer(BUF_SZ);
             Controller controller;
+            NetStabilityMeter connection_tester;
+            
             auto sendPing = [client]() {
-                std::string msg = std::format("PING {}\n", std::chrono::steady_clock::now().time_since_epoch().count());
+                std::string msg = std::format("PING {}\n", time_since_epoch().count());
                 std::print("<-{}", msg);
-                if (SOCKET_ERROR == send(client, msg.c_str(), msg.length() + 1, NULL)) {
+                if (SOCKET_ERROR == send(client, msg.c_str(), msg.length(), NULL)) {
                     printWSAError("send(PING)");
                 }};
             sendPing();
-
+            auto sendTestRequest = [client]() {
+                std::print("<-Test\n");
+                if (SOCKET_ERROR == send(client, "Test\n", 5, NULL)) {
+                    printWSAError("send(Test)");
+                }};
+            if (g_test_connection_stability) {
+                sendTestRequest();
+            }
             bool flash_laterUp = true;
             for (bool idle = true; g_running.load();) {
                 fd_set rfds2;
@@ -652,13 +613,37 @@ static void tcpService() {
                             case 'S': {
                                 //format:"SCREENSIZE:" width height xdpi ydpi devicename
                                 cheap_istrstream iss(p);
-                                iss.getInt();
+                                iss.skip();
                                 int width = iss.getInt();
                                 int height = iss.getInt();
                                 double xdpi = iss.getDouble();
                                 double ydpi = iss.getDouble();
                                 controller = Controller(width, height, xdpi, ydpi);
                                 break;
+                            }
+                            case 'T': {
+                                //format:"Test" time_point
+                                cheap_istrstream iss(p);
+                                iss.skip();
+                                long long time_point= iss.getLLInt();
+                                if (time_point == 0) {
+                                    printError("Invalid Test message\n");
+                                    break;
+                                }
+                                if (connection_tester.AddSamples(time_point - time_since_epoch().count())) {
+                                    std::thread(
+                                        [sendTestRequest]() {
+                                            if (IDRETRY == MessageBoxW(NULL,
+                                                L"You can press the \"Retry\" button to test again, or close this window.",
+                                                tester_UI_title,
+                                                MB_RETRYCANCEL | MB_ICONINFORMATION | MB_DEFBUTTON2))
+                                            {
+                                                sendTestRequest();
+                                            }
+                                            return;
+                                        }
+                                    ).detach();
+                                }
                             }
                             }
                         }
@@ -695,10 +680,11 @@ static void tcpService() {
         }
         catch(std::exception& e){
             printError("[TCP] An exception was thrown: {}\n"
-                "[TCP] Terminate connection...", e.what());
+                "[TCP] Terminate connection...\n", e.what());
             MessageBeep(MB_ICONERROR);
         }
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+        PostMessageW(FindWindowW(NULL, tester_UI_title), WM_CLOSE, NULL, NULL);
         closesocket(client);
     }
 
@@ -708,10 +694,7 @@ static void tcpService() {
 
 BOOL WINAPI consoleHandler(DWORD signal) {
     g_running.store(false);
-    if (g_kill_adb_when_close) {
-        system("adb kill-server");
-    }
-    Sleep(4000);
+    Sleep(4500);
     return FALSE;
 }
 
@@ -763,7 +746,7 @@ static void ReadAndPrintSettings() {
                 std::getline(file, str)
                     && ((g_output_received_message = atoi(str.c_str())), std::getline(file, str))
                     && ((g_output_keyboard_operation = atoi(str.c_str())), std::getline(file, str))
-                    && (g_kill_adb_when_close = atoi(str.c_str()));
+                    && (g_test_connection_stability = atoi(str.c_str()));
             }
             else {
                 error = true;
@@ -792,7 +775,7 @@ static void ReadAndPrintSettings() {
         "slide_require_multiplier : {:.2f}\n"
         "output_received_message : {}\n"
         "output_keyboard_operation : {}\n"
-        "kill_adb_when_close : {}\n"
+        "test_connection_stability : {}\n"
         , "△", vkToString(vk_button[0])
         , "□", vkToString(vk_button[1])
         , "×", vkToString(vk_button[2])
@@ -806,34 +789,11 @@ static void ReadAndPrintSettings() {
         , g_slide_require_multiplier
         , g_output_received_message
         , g_output_keyboard_operation
-        , g_kill_adb_when_close
+        , g_test_connection_stability
     );
 }
 int main() {
-    {
-        // 啟動adb server
-        // 不能直接使用system("adb start-server")，否則會導致adb server繼承某些東西
-        STARTUPINFOW si{};
-        PROCESS_INFORMATION pi{};
-        si.cb = sizeof(si);
-        wchar_t command[] = L"adb start-server";
-        BOOL ok = CreateProcessW(
-            L"adb.exe",
-            command,
-            NULL,
-            NULL,
-            FALSE, // 不繼承父進程的 handle
-            0,
-            NULL,
-            NULL,
-            &si,
-            &pi
-        );
-        if (ok) {
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-        }
-    }
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     SetConsoleCtrlHandler(nullptr, TRUE);//ignore CTRL+C
     SetConsoleCtrlHandler(consoleHandler, TRUE);
 
@@ -859,7 +819,6 @@ int main() {
     tcpThread.join();
     g_running.store(false);
     udpThread.join();
-    
 
     WSACleanup();
     std::print("\nShutting down...\n");
