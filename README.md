@@ -1,6 +1,8 @@
 此程式可以把安卓平板或手機變成Hatsune Miku: Project Diva的控制器，類似Switch版的觸控遊玩功能。  
 此程式需要與運行在安卓裝置上的[ProjectDivaControllerClient](https://github.com/JamilHsu/ProjectDivaControllerClient)一起搭配使用。
 
+![image](https://github.com/JamilHsu/ProjectDivaControllerServer/blob/master/ProjectDivaController%E9%81%8B%E4%BD%9C%E7%95%AB%E9%9D%A2.jpg?raw=true)
+
 啟動後，會自動枚舉電腦上的IP位址，將其填入平板/手機上即可連線。  
 在初次啟動時防毒軟體可能會來亂(我的這個程式能夠從網路接收攻擊者的命令並用SendInput操作你的鍵盤，桀桀桀桀)，而防火牆則會詢問是否允許存取網路。
 
