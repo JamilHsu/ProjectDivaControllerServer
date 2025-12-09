@@ -1,3 +1,5 @@
+[English](https://github.com/JamilHsu/ProjectDivaControllerServer/blob/master/README.en-US.md) | 中文
+
 此程式可以把安卓平板或手機變成Hatsune Miku: Project Diva的控制器，類似Switch版的觸控遊玩功能。  
 此程式需要與運行在安卓裝置上的[ProjectDivaControllerClient](https://github.com/JamilHsu/ProjectDivaControllerClient)一起搭配使用。
 
