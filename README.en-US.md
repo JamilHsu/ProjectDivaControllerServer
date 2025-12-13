@@ -1,7 +1,7 @@
 This application can transform your Android tablet or smartphone into a controller for *Hatsune Miku: Project Diva*, providing a touch-based control experience similar to the Nintendo Switch version's Tap Play.  
 This application must be used in conjunction with [ProjectDivaControllerClient](https://github.com/JamilHsu/ProjectDivaControllerClient), which runs on the Android device.
 
-![image](https://github.com/JamilHsu/ProjectDivaControllerServer/blob/master/ProjectDivaController%E9%81%8B%E4%BD%9C%E7%95%AB%E9%9D%A2.jpg?raw=true)
+![image](https://raw.githubusercontent.com/JamilHsu/ProjectDivaControllerServer/refs/heads/master/ProjectDivaController%E9%81%8B%E4%BD%9C%E7%95%AB%E9%9D%A2.jpg)
 
 ---
 
@@ -71,7 +71,8 @@ You may manually adjust this behavior by changing `slide_require_multiplier` in 
 Slide detection and tap detection are evaluated independently. This means that a sliding touch will also trigger a regular button press. This behavior does not affect gameplay, as Slide Icons never occur simultaneously with Melody Icons. Additionally, sliding inputs can still be performed using the same finger while holding a Hold Target.
 
 A maximum of **two simultaneous sliding inputs** is supported. As a result, simultaneous left and right Slide Icons should not be performed with three or more fingers.  
-For example, if four fingers simultaneously input ⇀⇀↼↼, the resulting input may become ⇀⇀, ↼↼, or ⇀↼ unpredictably.
+For example, if four fingers simultaneously input ⇀⇀↼↼, the resulting input may become ⇀⇀, ↼↼, or ⇀↼ unpredictably.  
+**The entire screen, including the four-color button area, can perform sliding operation, not just the yellow slider area at the top.** The only difference in the yellow slider area at the top is that clicking it won't cause a regular button to be pressed, and it's multiplied by 16 when calculating horizontal speed. If you want, you can set `slide_require_multiplier` to a larger value, making it less likely for the regular button area to accidentally cause a slide.
 
 ---
 
