@@ -39,11 +39,13 @@ double g_slide_require_multiplier = 1.0;
 #ifdef _DEBUG
 bool g_output_received_message = true;
 bool g_output_keyboard_operation = true;
+bool g_test_connection_stability = true;
 #else
 bool g_output_received_message = false;
 bool g_output_keyboard_operation = false;
+bool g_test_connection_stability = false;
 #endif // DEBUG
-bool g_test_connection_stability = true;
+
 
 std::array<BYTE, 8> vk_button{
     'U',
@@ -63,7 +65,8 @@ auto vk_stick = [vk_s = std::array<BYTE, 5>{'1', 'A', '\0', 'D', '3'}]
 //負責解析輸入並模擬按下按鍵
 class Controller {
     struct PointerInfo {
-        int x_coordinate = 0;
+        int x_coordinate = 0; //當前的x座標
+        int y_coordinate = 0; //按下時的y座標(不是當前y座標)
         int next_x_coordinate = 0;
         int momentum = 0;
         int8_t pressingButton = 0;// 0保留給未按下 // 1/2/3/4 / 5/6/7/8
@@ -74,7 +77,9 @@ class Controller {
     int later_up_count;
     int m_width;
     float m_xdpi;
+    int m_height;
     float m_sliding_demand_multiplier; // sqrt(Physical width)
+    int m_slider_height;
     struct {
         std::array<bool, 8> buttons;
         std::array<DWORD, 4> button_up_time;//主要按鍵上次抬起的時間；0代表最後抬起的是次要按鍵
@@ -83,12 +88,12 @@ class Controller {
     std::chrono::nanoseconds last_update_time;
 public:
     
-    Controller(int width, int height, float xdpi, float ydpi) :
-        m_width(width), m_xdpi(xdpi), map_ID_cache(), keybd_state(), later_up_count(),
+    Controller(int width = 1, int height = 1, float xdpi = 1, float ydpi = 1, int slider_height_ratio = 0) :
+        m_width(width), m_xdpi(xdpi), m_height(height), m_slider_height(height * slider_height_ratio / 100), 
+        map_ID_cache(), keybd_state(), later_up_count(),
         last_update_time(time_since_epoch()), 
         m_sliding_demand_multiplier(sqrt(width/ xdpi)){
     }
-    Controller() :Controller(1, 1, 1, 1) {};
     //return true 代表在在一小段時間後必須呼叫FlushLaterUp()
     bool OnTouchAction(const char* event) {
         switch (event[0]) {
@@ -114,13 +119,18 @@ public:
             cheap_istrstream iss(event + 1);
             int pointer_ID = iss.getInt();
             int x = iss.getInt();
+            int y = iss.getInt();
             int button_index = x * 4 / m_width;
             if (button_index >= 4 || button_index < 0) {
                 throw std::runtime_error("Invalid touch point coordinates");
             }
             map_ID_cache.at(pointer_ID) = {};
             map_ID_cache[pointer_ID].x_coordinate = x;
+            map_ID_cache[pointer_ID].y_coordinate = y;
             map_ID_cache[pointer_ID].next_x_coordinate = x;
+            if (y < m_slider_height) {
+                break;
+            }
             if (keybd_state.buttons[button_index] && keybd_state.buttons[button_index + 4]) {
                 //兩個按鍵都已經按下去了，忽略這第三根手指
             }
@@ -160,10 +170,7 @@ public:
         }
         case 'C': {
             cleanup_keybd_state();
-            //以紅字輸出
-            SetConsoleColor(12);
-            std::print("[GameController] ACTION_CANCEL\n");
-            SetConsoleColor();
+            printError("[GameController] ACTION_CANCEL");
             MessageBeep(MB_ICONERROR);
             break;
         }
@@ -207,6 +214,11 @@ public:
         for (int i = 0; i < map_ID_cache.size(); ++i) {
             if (map_ID_cache[i].next_x_coordinate - map_ID_cache[i].x_coordinate!=0){
                 candidate.push_back({ i,map_ID_cache[i].next_x_coordinate - map_ID_cache[i].x_coordinate });
+            }
+        }
+        for (auto& i : candidate) {
+            if (map_ID_cache[i.ID].y_coordinate < m_slider_height) {
+                i.displacement *= 16;
             }
         }
         if (g_output_received_message) {
@@ -618,7 +630,8 @@ static void tcpService() {
                                 int height = iss.getInt();
                                 double xdpi = iss.getDouble();
                                 double ydpi = iss.getDouble();
-                                controller = Controller(width, height, xdpi, ydpi);
+                                int slider_height_ratio = iss.getInt();
+                                controller = Controller(width, height, xdpi, ydpi, slider_height_ratio);
                                 break;
                             }
                             case 'T': {

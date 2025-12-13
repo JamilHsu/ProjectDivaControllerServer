@@ -20,9 +20,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="HelperFunctionAndClass.h">
-      <Filter>標頭檔</Filter>
-    </ClInclude>
     <ClInclude Include="resource.h">
       <Filter>標頭檔</Filter>
     </ClInclude>

@@ -137,7 +137,6 @@
     <ClCompile Include="ProjectDivaControllerServer.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="HelperFunctionAndClass.h" />
     <ClInclude Include="resource.h" />
   </ItemGroup>
   <ItemGroup>
