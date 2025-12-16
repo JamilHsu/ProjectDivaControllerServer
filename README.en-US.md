@@ -1,5 +1,6 @@
 This application can transform your Android tablet or smartphone into a controller for *Hatsune Miku: Project Diva*, providing a touch-based control experience similar to the Nintendo Switch version's Tap Play.  
-This application must be used in conjunction with [ProjectDivaControllerClient](https://github.com/JamilHsu/ProjectDivaControllerClient), which runs on the Android device.
+This application must be used in conjunction with [ProjectDivaControllerClient](https://github.com/JamilHsu/ProjectDivaControllerClient), which runs on the Android device.  
+Version that works on iOS -> [ProjectDivaController](https://github.com/JamilHsu/ProjectDivaController)
 
 ![image](https://raw.githubusercontent.com/JamilHsu/ProjectDivaControllerServer/refs/heads/master/ProjectDivaController%E9%81%8B%E4%BD%9C%E7%95%AB%E9%9D%A2.jpg)
 
