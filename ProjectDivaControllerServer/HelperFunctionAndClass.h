@@ -271,20 +271,26 @@ static void printWSAError(const char* tag) {
 
 
 void listLocalIPsAndAdapters() {
-    ULONG outBufLen = 0;
-    GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_PREFIX, nullptr, nullptr, &outBufLen);
+    ULONG outBufLen = 16360;
     std::vector<BYTE> buffer(outBufLen);
     IP_ADAPTER_ADDRESSES* addresses = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
 
-    if (GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_PREFIX, nullptr, addresses, &outBufLen) != NO_ERROR) {
+    ULONG res = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_PREFIX, nullptr, addresses, &outBufLen);
+
+    if (ERROR_BUFFER_OVERFLOW == res) {
+        buffer.resize(outBufLen);
+        res = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_PREFIX, nullptr, addresses, &outBufLen);
+    }
+
+    if(NO_ERROR != res){
         printError("Failed to get adapter addresses\n");
         return;
     }
 
     std::string str;
-    str.reserve(2048);
+    str.reserve(2024);
 
-    str+="=== Local network interfaces ===\n";
+    str += "=== Local network interfaces ===\n";
 
     char utf8buffer[2048]; utf8buffer[0] = '\0';
     for (auto* adapter = addresses; adapter; adapter = adapter->Next) {
@@ -292,7 +298,6 @@ void listLocalIPsAndAdapters() {
         if (adapter->OperStatus != IfOperStatusUp) continue;
         if (!adapter->FirstUnicastAddress) continue;
 
-        
         str += '[';
         boost::nowide::narrow(utf8buffer, sizeof(utf8buffer), adapter->FriendlyName);
         str += utf8buffer;
@@ -300,10 +305,6 @@ void listLocalIPsAndAdapters() {
         boost::nowide::narrow(utf8buffer, sizeof(utf8buffer), adapter->Description);
         str += utf8buffer;
         str += '\n';
-        
-        //std::string name= boost::nowide::narrow(adapter->FriendlyName);
-        //std::string desc = boost::nowide::narrow(adapter->Description);
-        //std::print("[{}] {}\n", name, desc);
 
         for (auto* ua = adapter->FirstUnicastAddress; ua; ua = ua->Next) {
             sockaddr_in* sa_in = reinterpret_cast<sockaddr_in*>(ua->Address.lpSockaddr);
