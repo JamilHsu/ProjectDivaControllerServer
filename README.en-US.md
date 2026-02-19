@@ -17,8 +17,7 @@ For example, the following methods all work:
 
 * USB tethering  
 * Mobile hotspot  
-* PC hotspot  
-* Both devices connected independently via the Internet  
+* PC hotspot   
 * `adb reverse tcp:3939 tcp:3939`
 
 Please select the IP address that corresponds to the network interface actually used for the connection.  
@@ -84,7 +83,7 @@ After verifying normal operation, you may set the following options to `0` in th
 * `output_received_message`  
 * `output_keyboard_operation`
 
-Disabling these outputs may slightly reduce latency.
+Disabling these outputs can slightly reduce latency.
 
 The displayed **Round-Trip Time (RTT)** value is provided for reference only and is highly inaccurate. It cannot be used to estimate one-way latency by simply dividing it by two. The only guarantee is that the actual latency will never exceed this RTT value. The RTT is currently derived from the ping process used solely for connection verification.
 
