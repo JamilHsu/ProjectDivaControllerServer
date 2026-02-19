@@ -1,9 +1,10 @@
 [English](https://github.com/JamilHsu/ProjectDivaControllerServer/blob/master/README.en-US.md) | 中文
 
 此程式可以把安卓平板或手機變成Hatsune Miku: Project Diva的控制器，類似Switch版的觸控遊玩功能。  
-此程式需要與運行在安卓裝置上的[ProjectDivaControllerClient](https://github.com/JamilHsu/ProjectDivaControllerClient)一起搭配使用。
+此程式需要與運行在安卓裝置上的[ProjectDivaControllerClient](https://github.com/JamilHsu/ProjectDivaControllerClient)一起搭配使用。  
+對於iOS用戶，請使用這個->[ProjectDivaController](https://github.com/JamilHsu/ProjectDivaController)
 
-![image](https://github.com/JamilHsu/ProjectDivaControllerServer/blob/master/ProjectDivaController%E9%81%8B%E4%BD%9C%E7%95%AB%E9%9D%A2.jpg?raw=true)
+![image](https://raw.githubusercontent.com/JamilHsu/ProjectDivaControllerServer/refs/heads/master/ProjectDivaController%E9%81%8B%E4%BD%9C%E7%95%AB%E9%9D%A2.jpg)
 
 啟動後，會自動枚舉電腦上的IP位址，將其填入平板/手機上即可連線。  
 在初次啟動時防毒軟體可能會來亂(我的這個程式能夠從網路接收攻擊者的命令並用SendInput操作你的鍵盤，桀桀桀桀)，而防火牆則會詢問是否允許存取網路。
@@ -24,7 +25,9 @@
 考慮水平速度最快的兩根手指，如果其水平移動速度超過某個閥值，就會根據其位置，為其分配推動左邊或右邊的stick(搖桿)，隨後，在接下來的過程中，只要其水平速度維持在啟動閥值的1/8以上，就會持續推著stick不放。  
 啟動閥值以物理距離計算。裝置的寬度越大，預設的啟動閥值也越大。你也可以在ProjectDivaControllerSettings.txt中將slide_require_multiplier設為1.0以外的值。  
 滑動與點擊的判定是分開考慮的。這也意味著，進行滑動操作的點擊也會導致普通按鈕被按下，不過這應該不會影響遊戲，因為滑動從未與按鈕同時出現，另一方面，在按著HOLD時也可以透過按著HOLD的手指來執行滑動操作。  
-最多只支援同時進行兩個滑動操作，因此如果是一左一右的同時按下的滑動，請不要同時在畫面上移動3根或以上的手指。例如，如果四隻手指同時輸入⇀⇀↼↼，其結果可能會是↼↼或⇀⇀或⇀↼
+最多只支援同時進行兩個滑動操作，因此如果是一左一右的同時按下的滑動，請不要同時在畫面上移動3根或以上的手指。例如，如果四隻手指同時輸入⇀⇀↼↼，其結果可能會是↼↼或⇀⇀或⇀↼  
+**整個螢幕包括四色按鈕區域都可以進行滑動操作，不僅限於上方的黃色區塊**。上方的滑動專用區域的區別僅在於點擊時不會導致普通按鈕被按下，並且在計算水平速度時會加乘16倍而已。當然你也可以將slide_require_multiplier設為較大的值，使得下方的一般按鈕區難以意外導致滑動。
+
 
 確認能正常運作之後，就可以把output_received_message和output_keyboard_operation設為0了。這可能可以稍微減少一點點點延遲。  
 Round-Trip Time的值僅供參考，極度不準確，無法簡單的透過除以2來判斷延遲。唯一能保證的是延遲絕對不會比這還慢。現在的Round-Trip Time只是用來確認連線狀態用的Ping的副產物。  
