@@ -1,0 +1,8 @@
+enabled = true
+name = "Tap Play"
+description = "Automatically launch ProjectDivaControllerServer.exe"
+version = "1.0"
+date = "12.05.2026"
+author = "Jamil"
+dll = ["Run ProjectDivaControllerServer_exe.dll"]
+include = ["."]
