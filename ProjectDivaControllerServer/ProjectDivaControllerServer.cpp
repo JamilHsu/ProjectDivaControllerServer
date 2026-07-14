@@ -23,7 +23,6 @@
 #include <chrono>
 #include <cassert>
 #include <algorithm>
-#include <boost/container/static_vector.hpp>
 #define BOOST_NOWIDE_NO_LIB
 #include <boost/nowide/utf/convert.hpp>
 #include "HelperFunctionAndClass.h"
@@ -32,18 +31,16 @@
 
 constexpr unsigned short DISCOVERY_PORT = 39831;
 constexpr unsigned short DAFULT_SERVICE_PORT = 3939;
+// I had originally planned to use another port if port 3939 was occupied, but I never encountered this situation.
 std::atomic<unsigned short> g_service_port = DAFULT_SERVICE_PORT;
 std::atomic<bool> g_running(true);
 
-double g_slide_require_multiplier = 1.0;
 #ifdef _DEBUG
 bool g_output_received_message = true;
 bool g_output_keyboard_operation = true;
-bool g_test_connection_stability = true;
 #else
 bool g_output_received_message = false;
 bool g_output_keyboard_operation = false;
-bool g_test_connection_stability = false;
 #endif // DEBUG
 
 
@@ -62,321 +59,67 @@ auto vk_stick = [vk_s = std::array<BYTE, 5>{'Q', 'U', '\0', 'E', 'O'}]
     return vk_s.at(stick + 2);
     };
 
-//負責解析輸入並模擬按下按鍵
+//負責模擬按下按鍵並管理按鍵狀態
 class Controller {
-    struct PointerInfo {
-        int x_coordinate = 0; //當前的x座標
-        int y_coordinate = 0; //按下時的y座標(不是當前y座標)
-        int next_x_coordinate = 0;
-        int momentum = 0;
-        int8_t pressingButton = 0;// 0保留給未按下 // 1/2/3/4 / 5/6/7/8
-        int8_t pressingDirectionalButton = 0; //負代表向左，正代表向右  1是左邊的搖桿；2是右邊
-        DWORD press_time = 0;
-    };
-    std::array<PointerInfo, 20> map_ID_cache;
-    int later_up_count;
-    int m_width;
-    float m_xdpi;
-    int m_height;
-    float m_sliding_demand_multiplier; // sqrt(Physical width)
-    int m_slider_height;
     struct {
-        std::array<bool, 8> buttons;
-        std::array<DWORD, 4> button_up_time;//主要按鍵上次抬起的時間；0代表最後抬起的是次要按鍵
-        std::array<int16_t, 2>sticks;
-    }keybd_state{};
-    std::chrono::nanoseconds last_update_time;
+        std::array<bool, 8> buttons{};
+        std::array<int16_t, 2> sticks{};
+        std::array<bool, 8> pendingLaterUp{};
+        std::array<bool, 2> pendingStickLaterUp{};
+        std::array<std::chrono::nanoseconds, 8> button_downTime{};
+        std::array<std::chrono::nanoseconds, 2> stick_downTime{};
+    } keybd_state{};
+
+    // MM+ polls the keyboard state once per frame, instead of through keyboard messages.
+    // To prevent input from being lost, ensure that each keystroke is maintained for at least one frame.
+    static constexpr std::chrono::nanoseconds min_keepdown_time = std::chrono::nanoseconds(16'600'000);
 public:
-    
-    Controller(int width = 1, int height = 1, float xdpi = 1, float ydpi = 1, int slider_height_ratio = 0) :
-        m_width(width), m_xdpi(xdpi), m_height(height), m_slider_height(height * slider_height_ratio / 100), 
-        map_ID_cache(), keybd_state(), later_up_count(),
-        last_update_time(time_since_epoch()), 
-        m_sliding_demand_multiplier(sqrt(width/ xdpi)){
+    void ButtonDown(BYTE index) {
+        if (keybd_state.pendingLaterUp.at(index)) {
+            // A release was deferred; honor it now before re-pressing, so the game
+            // still sees a full up/down transition instead of one continuous hold.
+            keybd_state.buttons.at(index) = false;
+            SetConsoleColor(FOREGROUND_BLUE | FOREGROUND_GREEN);
+            SendKeybdInput(vk_button.at(index), KEYEVENTF_KEYUP);
+            SetConsoleColor();
+            keybd_state.pendingLaterUp[index] = false;
+        }
+        keybd_state.buttons.at(index) = true;
+        SendKeybdInput(vk_button.at(index));
+        keybd_state.button_downTime.at(index) = time_since_epoch();
     }
-    //return true 代表在在一小段時間後必須呼叫FlushLaterUp()
-    bool OnTouchAction(const char* event) {
-        switch (event[0]) {
-        case 'P': {
-            // pong
-            // format:
-            // "PONG" time_since_epoch
-            auto now = time_since_epoch();
-
-            long long timept = atoll(event + 4);
-            if (timept == 0) {
-                printError("PING returned an incorrect PONG format.\n");
-            }
-            else {
-                std::print("Round-Trip Time: {}ns\n", format_thousands_separator(now.count() - timept));
-            }
-            return 0;
+    void ButtonUp(BYTE index) {
+        std::chrono::nanoseconds now = time_since_epoch();
+        if ((now - keybd_state.button_downTime.at(index)) < min_keepdown_time) {
+            keybd_state.pendingLaterUp.at(index) = true;
+            return;
         }
-        case 'D': {
-            // pointer down
-            // format:
-            // 'D' ID x y
-            cheap_istrstream iss(event + 1);
-            int pointer_ID = iss.getInt();
-            int x = iss.getInt();
-            int y = iss.getInt();
-            int button_index = x * 4 / m_width;
-            if (button_index >= 4 || button_index < 0) {
-                throw std::runtime_error("Invalid touch point coordinates");
-            }
-            map_ID_cache.at(pointer_ID) = {};
-            map_ID_cache[pointer_ID].x_coordinate = x;
-            map_ID_cache[pointer_ID].y_coordinate = y;
-            map_ID_cache[pointer_ID].next_x_coordinate = x;
-            if (y < m_slider_height) {
-                break;
-            }
-            if (keybd_state.buttons[button_index] && keybd_state.buttons[button_index + 4]) {
-                //兩個按鍵都已經按下去了，忽略這第三根手指
-            }
-            else {
-                if (!keybd_state.buttons[button_index] && !keybd_state.buttons[button_index + 4]) {
-                    //兩個按鍵都沒被按著
-                    //優先選擇主要按鍵，除非上一個抬起來的是主要按鍵，且才剛被抬起來
-                    if (keybd_state.button_up_time[button_index] != 0
-                        && GetTickCount32() - keybd_state.button_up_time[button_index] < 100) {
-                        button_index += 4;
-                    }
-                }
-                else {
-                    //只有一個按鍵按著；選另一個
-                    if (keybd_state.buttons[button_index]) {
-                        button_index += 4;
-                    }
-                }
-            }
-            if (!keybd_state.buttons[button_index]) {
-                //按下按鍵
-                keybd_state.buttons[button_index] = true;
-                map_ID_cache[pointer_ID].pressingButton = button_index + 1;
-                map_ID_cache[pointer_ID].press_time = GetTickCount32();
-                SendKeybdInput(vk_button[button_index]);
-            }
-            break;
-        }
-        case 'U': {
-            // pointer up
-            // format:
-            // 'U' ID
-            FlushMoveAction();
-            cheap_istrstream iss(event + 1);
-            int pointer_ID = iss.getInt();
-            return ActionPointerUp(pointer_ID);
-        }
-        case 'C': {
-            cleanup_keybd_state();
-            printError("[GameController] ACTION_CANCEL");
-            MessageBeep(MB_ICONERROR);
-            break;
-        }
-        case 'M': {
-            // move
-            // format:
-            // 'M' ID x1 y1 ID x2 y2 ID x3 y3 ...
-            cheap_istrstream iss(event + 2);
-            do {
-                int ID = iss.getInt();
-                int x = iss.getInt();
-                int y = iss.getInt();
-                map_ID_cache.at(ID).next_x_coordinate = x;
-            } while (iss.data() && *iss.data()==' ');
-            break;
-        }
-        default:
-            return 0;
-        }
-        return 0;
+        keybd_state.buttons.at(index) = false;
+        SendKeybdInput(vk_button.at(index), KEYEVENTF_KEYUP);
     }
-    void FlushLaterUp() {
-        SetConsoleColor(FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-        for (;later_up_count > 0; --later_up_count) {
-            map_ID_cache[map_ID_cache.size() - later_up_count].press_time = 0;
-            ActionPointerUp(map_ID_cache.size() - later_up_count);
+    void StickDown(char index) {
+        size_t i = std::abs(index) - 1;
+        if (keybd_state.pendingStickLaterUp.at(i)) {
+            SetConsoleColor(FOREGROUND_BLUE | FOREGROUND_GREEN);
+            SendKeybdInput(vk_stick(keybd_state.sticks.at(i)), KEYEVENTF_KEYUP);
+            SetConsoleColor();
+            keybd_state.pendingStickLaterUp[i] = false;
         }
-        SetConsoleColor();
+        keybd_state.sticks.at(i) = index;
+        SendKeybdInput(vk_stick(index));
+        keybd_state.stick_downTime.at(i) = time_since_epoch();
     }
-    void FlushMoveAction() {
-        SetConsoleColor(FOREGROUND_GREEN);
-        
-        const auto nexttp = time_since_epoch();
-        const auto duration = nexttp - last_update_time;
-        last_update_time = nexttp;
-        struct ID_displacement {
-            int ID;
-            int displacement;
-        };
-        boost::container::static_vector<ID_displacement, 20> candidate;
-        for (int i = 0; i < map_ID_cache.size(); ++i) {
-            if (map_ID_cache[i].next_x_coordinate - map_ID_cache[i].x_coordinate!=0){
-                candidate.push_back({ i,map_ID_cache[i].next_x_coordinate - map_ID_cache[i].x_coordinate });
-            }
+    void StickUp(char index) {
+        size_t i = std::abs(index) - 1;
+        std::chrono::nanoseconds now = time_since_epoch();
+        if ((now - keybd_state.stick_downTime.at(i)) < min_keepdown_time) {
+            keybd_state.pendingStickLaterUp.at(i) = true;
+            return;
         }
-        for (auto& i : candidate) {
-            if (map_ID_cache[i.ID].y_coordinate < m_slider_height) {
-                i.displacement *= 16;
-            }
-        }
-        if (g_output_received_message) {
-            for (auto i : candidate) {
-                std::print("candidates:[ID:{} displacement:{}]", i.ID, i.displacement);
-            }
-            std::print("\n");
-        }
-        const int min_displacement_require = MinDisplacementRequire((std::min)(duration, std::chrono::nanoseconds(33'554'432)));
-        const int max_momentum = MinDisplacementRequire(std::chrono::nanoseconds(16'777'216));
-        const int reduce_displacement = MinDisplacementRequire(duration) / 8;
-        //結算先前動量
-        {
-            //增加動量
-            int max_momentum2 = max_momentum + reduce_displacement;
-            for (auto i : candidate) {
-                map_ID_cache[i.ID].momentum 
-                    = std::clamp(map_ID_cache[i.ID].momentum + i.displacement, -max_momentum2, max_momentum2);
-            }
-
-            //減少動量並抬起按鍵
-            for (auto& i : map_ID_cache) {
-                if (i.momentum > reduce_displacement) {
-                    i.momentum -= reduce_displacement;
-                }
-                else if (i.momentum < -reduce_displacement) {
-                    i.momentum += reduce_displacement;
-                }
-                else {
-                    i.momentum = 0;
-                }
-                if (i.pressingDirectionalButton) {
-                    if (i.pressingDirectionalButton * i.momentum <= 0) {
-                        //動量消耗殆盡或方向反了
-                        //抬起滑鍵
-                        keybd_state.sticks.at(abs(i.pressingDirectionalButton) - 1) = 0;
-                        SendKeybdInput(vk_stick(i.pressingDirectionalButton), KEYEVENTF_KEYUP);
-                        i.pressingDirectionalButton = 0;
-                    }
-                    else {
-                        //把此手指從候選者中剃除
-                        for (auto& cand : candidate) {
-                            if (cand.ID == std::addressof(i) - map_ID_cache.data()) {
-                                
-                                cand.displacement = 0;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        std::sort(candidate.begin(), candidate.end(), [](ID_displacement a, ID_displacement b) {
-            return abs(a.displacement) > abs(b.displacement);
-            });
-
-        if (g_output_received_message && candidate.size() > 0) {
-            std::print("min_displacement_require:{} maxdisplacement:{} {}\n\n"
-                , min_displacement_require, candidate.front().displacement, candidate.front().ID);
-        }
-        int freestickcount = (keybd_state.sticks[0] == 0) + (keybd_state.sticks[1] == 0);
-        if (freestickcount == 2
-            && candidate.size() >= 2
-            && abs(candidate[1].displacement) > min_displacement_require) {
-            auto candidateL = candidate.front();
-            auto candidateR = candidate[1];
-            if (map_ID_cache[candidateL.ID].x_coordinate > map_ID_cache[candidateR.ID].x_coordinate) {
-                std::swap(candidateL, candidateR);
-            }
-            map_ID_cache[candidateL.ID].pressingDirectionalButton =
-                keybd_state.sticks[0] =
-                candidateL.displacement > 0 ? 1 : -1;
-            map_ID_cache[candidateL.ID].press_time = GetTickCount32();
-
-            map_ID_cache[candidateR.ID].pressingDirectionalButton =
-                keybd_state.sticks[1] =
-                candidateR.displacement > 0 ? 2 : -2;
-            map_ID_cache[candidateR.ID].press_time = GetTickCount32();
-            //給予初始動量
-            {
-                map_ID_cache[candidateL.ID].momentum
-                    = std::clamp(map_ID_cache[candidateL.ID].momentum + candidateL.displacement, -max_momentum, max_momentum);
-                map_ID_cache[candidateR.ID].momentum
-                    = std::clamp(map_ID_cache[candidateR.ID].momentum + candidateR.displacement, -max_momentum, max_momentum);
-            }
-            INPUT input[2]{};
-            input[0].type = input[1].type = INPUT_KEYBOARD;
-            input[0].ki.wVk = vk_stick(keybd_state.sticks[0]);
-            input[1].ki.wVk = vk_stick(keybd_state.sticks[1]);
-            SendInput(2, input, sizeof(INPUT));
-            if (g_output_keyboard_operation) {
-                std::print("{} {}  [DOWN]\n",
-                    keybd_state.sticks[0] > 0 ? "->" : "<-",
-                    keybd_state.sticks[1] > 0 ? "->" : "<-");
-            }
-        }
-        else if (freestickcount >= 1
-            && candidate.size() >= 1
-            && abs(candidate[0].displacement) > min_displacement_require) {
-            auto Candidate = candidate.front();
-            int LR;
-            if (freestickcount == 2) {
-                LR = 1 + (map_ID_cache[Candidate.ID].x_coordinate > m_width / 2);
-            }
-            else {
-                LR = keybd_state.sticks[0] == 0 ? 1 : 2;
-            }
-            map_ID_cache[Candidate.ID].pressingDirectionalButton =
-                keybd_state.sticks[LR - 1] =
-                Candidate.displacement > 0 ? LR : -LR;
-            map_ID_cache[Candidate.ID].press_time = GetTickCount32();
-
-            //給予初始動量
-            map_ID_cache[Candidate.ID].momentum
-                = std::clamp(map_ID_cache[Candidate.ID].momentum + Candidate.displacement, -max_momentum, max_momentum);
-            SendKeybdInput(vk_stick(keybd_state.sticks[LR - 1]));
-        }
-        for (auto& i : map_ID_cache) {
-            i.x_coordinate = i.next_x_coordinate;
-        }
-        SetConsoleColor();
+        keybd_state.sticks.at(i) = 0;
+        SendKeybdInput(vk_stick(index), KEYEVENTF_KEYUP);
     }
-    ~Controller() {
-        cleanup_keybd_state();
-    }
-private:
-    int MinDisplacementRequire(std::chrono::nanoseconds duration) const noexcept {
-        return static_cast<int>(m_xdpi* duration.count()* m_sliding_demand_multiplier*g_slide_require_multiplier / 268'435'456);// 在10英吋的平板上，約12in/s
-    }
-    bool ActionPointerUp(int pointer_ID) {
-        if (map_ID_cache.at(pointer_ID).pressingButton || map_ID_cache[pointer_ID].pressingDirectionalButton) {
-            if (20 > GetTickCount32() - map_ID_cache[pointer_ID].press_time) {
-                //This pointer才剛按下某個按鍵，為了確保此按鍵能被遊戲偵測到，稍微延遲1幀的時間再抬起
-                ++later_up_count;
-                map_ID_cache[map_ID_cache.size() - later_up_count] = map_ID_cache[pointer_ID];
-                map_ID_cache[pointer_ID] = {};
-                return true;
-            }
-            if (map_ID_cache[pointer_ID].pressingButton) {
-                int button_index = map_ID_cache[pointer_ID].pressingButton - 1;
-                keybd_state.buttons.at(button_index) = false;
-                SendKeybdInput(vk_button[button_index], KEYEVENTF_KEYUP);
-                if (button_index < 4) {
-                    keybd_state.button_up_time[button_index] = GetTickCount32();
-                }
-                else {
-                    keybd_state.button_up_time[button_index - 4] = 0;
-                }
-            }
-            if (map_ID_cache[pointer_ID].pressingDirectionalButton) {
-                keybd_state.sticks.at(abs(map_ID_cache[pointer_ID].pressingDirectionalButton) - 1) = 0;
-                SendKeybdInput(vk_stick(map_ID_cache[pointer_ID].pressingDirectionalButton), KEYEVENTF_KEYUP);
-            }
-        }
-        map_ID_cache[pointer_ID] = {};
-        return false;
-    }
-    void SendKeybdInput(BYTE vk_code,DWORD Flags=NULL) {
+    void SendKeybdInput(BYTE vk_code, DWORD Flags = NULL) {
         INPUT input{};
         input.type = INPUT_KEYBOARD;
         input.ki.wVk = vk_code;
@@ -401,9 +144,41 @@ private:
             );
         }
     }
+
+    int FlushLaterUp() {
+        std::chrono::nanoseconds now = time_since_epoch();
+        int stillPending = 0;
+        for (size_t idx = 0; idx < keybd_state.pendingLaterUp.size(); ++idx) {
+            if (!keybd_state.pendingLaterUp[idx]) continue;
+            if (now - keybd_state.button_downTime[idx] > min_keepdown_time) {
+                keybd_state.buttons[idx] = false;
+                SetConsoleColor(FOREGROUND_BLUE | FOREGROUND_GREEN);
+                SendKeybdInput(vk_button[idx], KEYEVENTF_KEYUP);
+                SetConsoleColor();
+                keybd_state.pendingLaterUp[idx] = false;
+            }
+            else {
+                ++stillPending;
+            }
+        }
+        for (size_t idx = 0; idx < keybd_state.pendingStickLaterUp.size(); ++idx) {
+            if (!keybd_state.pendingStickLaterUp[idx]) continue;
+            if (now - keybd_state.stick_downTime[idx] > min_keepdown_time) {
+                BYTE vk = vk_stick(keybd_state.sticks[idx]);
+                keybd_state.sticks[idx] = 0;
+                SetConsoleColor(FOREGROUND_BLUE | FOREGROUND_GREEN);
+                SendKeybdInput(vk, KEYEVENTF_KEYUP);
+                SetConsoleColor();
+                keybd_state.pendingStickLaterUp[idx] = false;
+            }
+            else {
+                ++stillPending;
+            }
+        }
+        return stillPending;
+    }
     void cleanup_keybd_state() {
-        map_ID_cache = {};
-        for (int i = 0; i < keybd_state.buttons.size(); ++i) {
+        for (size_t i = 0; i < keybd_state.buttons.size(); ++i) {
             if (keybd_state.buttons[i]) {
                 SendKeybdInput(vk_button[i], KEYEVENTF_KEYUP);
             }
@@ -415,7 +190,10 @@ private:
             SendKeybdInput(vk_stick(keybd_state.sticks[1]), KEYEVENTF_KEYUP);
         }
         keybd_state = {};
-    }   
+    }
+    ~Controller() {
+        cleanup_keybd_state();
+    }
 };
 
 // UDP discovery server: listen for discovery packets and reply "Miku here:3939"
@@ -467,7 +245,7 @@ static void udpDiscoveryServer() {
         std::print("[UDP] Received from {}:{} -> {}\n", fromIp, ntohs(from.sin_port), buf);
 
         // Simple protocol: respond with HERE:PORT
-        std::string resp = "Miku here: " + std::to_string(g_service_port);
+        std::string resp = std::format("Miku here: {}", g_service_port.load());
         int sent = sendto(sock, resp.c_str(), (int)resp.size(), 0, reinterpret_cast<sockaddr*>(&from), fromLen);
         if (sent == SOCKET_ERROR) {
             printWSAError("[UDP] sendto()");
@@ -554,99 +332,90 @@ static void tcpService() {
         std::print("[TCP] Client connected from {}:{}\n", peerIp, ntohs(peer.sin_port));
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 
-        static constexpr LPCWSTR tester_UI_title = L"Connection stability test finished";
         try {
             // receive loop
-            const int BUF_SZ = 2048;
+            const int BUF_SZ = 1016;
             std::vector<char> buffer(BUF_SZ);
             Controller controller;
-            NetStabilityMeter connection_tester;
-            
+            NetStabilityMeter2 connection_tester;
+            //除了保持連線外，也順便做連線延遲測試
             auto sendPing = [client]() {
-                std::string msg = std::format("PING {}\n", time_since_epoch().count());
-                std::print("<-{}", msg);
-                if (SOCKET_ERROR == send(client, msg.c_str(), msg.length(), NULL)) {
+                long long time = time_since_epoch().count();
+                static_assert(sizeof(time) == 8);
+                if (SOCKET_ERROR == send(client, reinterpret_cast<const char*>(&time), 8, NULL)) {
                     printWSAError("send(PING)");
                 }};
             sendPing();
-            auto sendTestRequest = [client]() {
-                std::print("<-Test\n");
-                if (SOCKET_ERROR == send(client, "Test\n", 5, NULL)) {
-                    printWSAError("send(Test)");
-                }};
-            if (g_test_connection_stability) {
-                sendTestRequest();
-            }
-            bool flash_laterUp = true;
+            bool flash_laterUp = false;
             for (bool idle = true; g_running.load();) {
                 fd_set rfds2;
                 FD_ZERO(&rfds2);
                 FD_SET(client, &rfds2);
 
-                timeval tv2 = flash_laterUp ? timeval{ 0, 14'000 } : timeval{ 5,0 };
+                // 為了避免喚醒延遲，當需要flash_laterUp時將採用輪詢的方式
+                // 這種情況應該不常發生，因此浪費些CPU時間應該沒關係
+                // 不過，在透過無線網路連接時，發生的機率會較高
+                timeval tv2 = flash_laterUp ? timeval{ 0, 0 } : timeval{ 4, 500000 };
                 if (0 < select(0, &rfds2, nullptr, nullptr, &tv2)) {
-                    idle = false;
-                    flash_laterUp = false;
-                    int bytes = recv(client, buffer.data(), BUF_SZ - 2, 0);
-
+                    if (idle) {
+                        idle = false;
+                        std::println("[TCP] ->PONG");
+                    }
+                    // 保留足夠空間以預防無效輸入導致讀取超出邊界
+                    int bytes = recv(client, buffer.data(), BUF_SZ - 16, 0);
                     if (bytes > 0) {
-                        controller.FlushLaterUp();
-                        flash_laterUp = false;
-                        buffer[bytes] = buffer[bytes + 1] = '\0';
                         if (g_output_received_message) {
-                            std::print("->{}\n", buffer.data());
+                            std::string s;
+                            s.reserve(bytes * 2);
+                            for (int i = 0; i < bytes; ++i) {
+                                std::format_to(std::back_inserter(s), "{:02X}", static_cast<BYTE>(buffer[i]));
+                            }
+                            std::println("->{}", s);
                         }
-
-                        for (const char* p = buffer.data(), *pend = p + bytes;
-                            *p != '\0';
-                            p = std::find(p, pend, '\n') + 1) {
+                        for (const char* p = buffer.data(), *pend = p + bytes;p<pend;) {
                             switch (p[0]) {
-                            case 'D':
-                            case 'U':
-                            case 'C':
-                            case 'M':
-                            case 'P':
-                                flash_laterUp |= controller.OnTouchAction(p);
-                                break;
-                            case 'S': {
-                                //format:"SCREENSIZE:" width height xdpi ydpi devicename
-                                cheap_istrstream iss(p);
-                                iss.skip();
-                                int width = iss.getInt();
-                                int height = iss.getInt();
-                                double xdpi = iss.getDouble();
-                                double ydpi = iss.getDouble();
-                                int slider_height_ratio = iss.getInt();
-                                controller = Controller(width, height, xdpi, ydpi, slider_height_ratio);
+                            case 'D': {
+                                controller.ButtonDown(p[1]);
+                                p += 2;
                                 break;
                             }
-                            case 'T': {
-                                //format:"Test" time_point
-                                cheap_istrstream iss(p);
-                                iss.skip();
-                                long long time_point= iss.getLLInt();
-                                if (time_point == 0) {
-                                    printError("Invalid Test message\n");
-                                    break;
-                                }
-                                if (connection_tester.AddSamples(time_point - time_since_epoch().count())) {
-                                    std::thread(
-                                        [sendTestRequest]() {
-                                            if (IDRETRY == MessageBoxW(NULL,
-                                                L"You can press the \"Retry\" button to test again, or close this window.",
-                                                tester_UI_title,
-                                                MB_RETRYCANCEL | MB_ICONINFORMATION | MB_DEFBUTTON2))
-                                            {
-                                                sendTestRequest();
-                                            }
-                                            return;
-                                        }
-                                    ).detach();
-                                }
+                            case 'U': {
+                                controller.ButtonUp(p[1]);
+                                p += 2;
+                                break;
                             }
+                            case 'd': {
+                                controller.StickDown(p[1]);
+                                p += 2;
+                                break;
+                            }
+                            case 'u': {
+                                controller.StickUp(p[1]);
+                                p += 2;
+                                break;
+                            }
+                            case 'C': {
+                                controller.cleanup_keybd_state();
+                                p += 1;
+                                break;
+                            }
+                            case 'R': {
+                                INT64 serverSendTime = *(reinterpret_cast<const UNALIGNED INT64*>(p + 1));
+                                INT64 clientRevcTime = *(reinterpret_cast<const UNALIGNED INT64*>(p + 9));
+                                INT64 serverRevcTime = time_since_epoch().count();
+                                int res = connection_tester.AddSample(serverSendTime, clientRevcTime, serverRevcTime);
+                                if (res) sendPing();
+                                p += 17;
+                                break;
+                            }
+                            default:
+                                p = pend;
+                                printError("Unknown message");
+                                MessageBeep(MB_ICONERROR);
+                                break;
                             }
                         }
-                        controller.FlushMoveAction();
+                        flash_laterUp = controller.FlushLaterUp();
                     }
                     else if (bytes == 0) {
                         std::print("[TCP] Client disconnected.\n");
@@ -664,16 +433,23 @@ static void tcpService() {
                     }
                 }
                 else if (flash_laterUp) {
-                    controller.FlushLaterUp();
-                    flash_laterUp = false;
+                    //我們正瘋狂自旋輪詢中，可能持續數毫秒之久。姑且降低些CPU功耗吧
+                    //這能顯著降低輪詢的次數(從數萬次降至數百次)，但是不是真能降低功耗我也不知道
+                    for (int i = 0; i < 8192; ++i) {
+                        _mm_pause();
+                    }
+                    flash_laterUp = controller.FlushLaterUp();
                 }
                 else {
                     if (idle) {
                         std::print("[TCP] Connection timed out.\n");
                         break;
                     }
-                    idle = true;
-                    sendPing();
+                    else {
+                        idle = true;
+                        std::println("[TCP] <-PING");
+                        sendPing();
+                    }
                 }
             }
         }
@@ -683,7 +459,6 @@ static void tcpService() {
             MessageBeep(MB_ICONERROR);
         }
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
-        PostMessageW(FindWindowW(NULL, tester_UI_title), WM_CLOSE, NULL, NULL);
         closesocket(client);
     }
 
@@ -693,7 +468,7 @@ static void tcpService() {
 
 BOOL WINAPI consoleHandler(DWORD signal) {
     g_running.store(false);
-    Sleep(4500);
+    Sleep(4800);
     return FALSE;
 }
 
@@ -738,20 +513,9 @@ static void ReadAndPrintSettings() {
             || !std::getline(file, str) || SetVk(vk_stick(-2))
             || !std::getline(file, str) || SetVk(vk_stick(2));
         //以及comma , operator
-        if (std::getline(file, str) && str.size() >= 1) {
-            double temp = atof(str.c_str());
-            if (temp) {
-                g_slide_require_multiplier = temp;
-                std::getline(file, str)
-                    && ((g_output_received_message = atoi(str.c_str())), std::getline(file, str))
-                    && ((g_output_keyboard_operation = atoi(str.c_str())), std::getline(file, str))
-                    && (g_test_connection_stability = atoi(str.c_str()));
-            }
-            else {
-                error = true;
-                goto err;
-            }
-        }
+        std::getline(file, str)
+            && ((g_output_received_message = atoi(str.c_str())), std::getline(file, str))
+            && ((g_output_keyboard_operation = atoi(str.c_str())), std::getline(file, str));
         if (error) {
             err:
             printError("The \"ProjectDivaControllerSettings.txt\" file does not contain enough settings or format incorrect; the rest will use default values.");
@@ -771,10 +535,8 @@ static void ReadAndPrintSettings() {
         "{} : {}\n"
         "{} : {}\n"
         "{}\n{} {}\t{} {}\n"
-        "slide_require_multiplier : {:.2f}\n"
         "output_received_message : {}\n"
         "output_keyboard_operation : {}\n"
-        "test_connection_stability : {}\n"
         , "△", vkToString(vk_button[0])
         , "□", vkToString(vk_button[1])
         , "×", vkToString(vk_button[2])
@@ -785,15 +547,12 @@ static void ReadAndPrintSettings() {
         , "🡆", vkToString(vk_button[7])
         , "↼ ⇀\t↼ ⇀"
         , vkToString(vk_stick(-1)), vkToString(vk_stick(1)), vkToString(vk_stick(-2)), vkToString(vk_stick(2))
-        , g_slide_require_multiplier
         , g_output_received_message
         , g_output_keyboard_operation
-        , g_test_connection_stability
     );
 }
 int main() {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    SetConsoleCtrlHandler(nullptr, TRUE);//ignore CTRL+C
     SetConsoleCtrlHandler(consoleHandler, TRUE);
 
     //UTF8萬歲! 亂碼再見!
@@ -820,7 +579,6 @@ int main() {
     udpThread.join();
 
     WSACleanup();
-    std::print("\nShutting down...\n");
     return 0;
 }
 
